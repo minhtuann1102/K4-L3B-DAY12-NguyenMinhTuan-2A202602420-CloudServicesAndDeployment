@@ -40,9 +40,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # TODO (CP1): khai báo 6 trường theo bảng trên, ví dụ:
-    #     port: int = 8000
-    #     agent_api_key: str
+    # Không phải secret → có mặc định, chạy được ngay ở laptop.
+    port: int = 8000
+    redis_url: str = "redis://localhost:6379/0"
+    rate_limit_per_minute: int = 10
+    monthly_budget_usd: float = 10.0
+    log_level: str = "INFO"
+
+    # SECRET — KHÔNG có giá trị mặc định (fail fast).
+    # Thiếu AGENT_API_KEY → pydantic ném ValidationError ngay lúc khởi động,
+    # thay vì âm thầm chạy với khóa mặc định và bị gọi miễn phí trên cloud.
+    agent_api_key: str
 
 
 @lru_cache(maxsize=1)
