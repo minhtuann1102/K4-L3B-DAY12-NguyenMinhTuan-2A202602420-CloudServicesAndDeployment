@@ -153,7 +153,34 @@ def ask(
     ``user_id`` do ``verify_api_key`` trả về, nên request không có API key
     hợp lệ sẽ dừng ở 401 trước khi chạm vào bất cứ dòng nào ở đây.
     """
-    raise NotImplementedError("TODO (CP3/CP4): cài đặt /ask")
+    # 1 & 2. Chặn TRƯỚC khi gọi LLM — tiền mất ở bước gọi LLM
+    limiter.check(user_id)
+    guard.check(user_id)
+
+    # 3–5. Lịch sử, gọi LLM, ghi hội thoại
+    history = store.get_history(user_id)
+    result = ask_llm(payload.question, history)
+    store.append(user_id, "user", payload.question)
+    store.append(user_id, "assistant", result["answer"])
+
+    # 6–7. Cộng chi phí và ghi log structured
+    guard.record(user_id, result["cost_usd"])
+    log_event(
+        "ask_completed",
+        user_id=user_id,
+        tokens_in=result["tokens_in"],
+        tokens_out=result["tokens_out"],
+        cost_usd=result["cost_usd"],
+    )
+
+    # 8. Trả về
+    return {
+        "answer": result["answer"],
+        "user_id": user_id,
+        "history_length": len(history),
+        "cost_usd": result["cost_usd"],
+        "tokens": {"in": result["tokens_in"], "out": result["tokens_out"]},
+    }
 
 
 if __name__ == "__main__":
