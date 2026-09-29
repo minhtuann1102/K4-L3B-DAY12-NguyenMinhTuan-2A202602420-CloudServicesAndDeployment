@@ -1,0 +1,61 @@
+# BONUS — CI/CD: mỗi lần push, GitHub tự test + build; chỉ khi xanh mới deploy.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # 1. Chạy test trên máy sạch — bắt lỗi TRƯỚC khi merge
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # 12-Factor: cùng code, chỉ khác biến môi trường (giá trị giả cho CI)
+      AGENT_API_KEY: ci-dummy
+      REDIS_URL: "fake://"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Cai dependency
+        run: pip install -r requirements.txt
+      - name: Chay test
+        # test_cp5 cần bản deploy sống → bỏ qua; test_bonus tự tham chiếu badge → bỏ qua
+        run: pytest tests/ -v -m "not docker" --ignore=tests/test_cp5.py --ignore=tests/test_bonus_cicd.py
+
+  # 2. Build Docker image ở môi trường sạch — "máy tôi build được" có kiểm chứng
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t day12-agent:ci .
+
+  # 3. Chỉ deploy khi test + build đều xanh và chỉ từ nhánh main
+  deploy:
+    needs: [test, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      # Render Deploy Hook — cất trong Settings → Secrets and variables → Actions
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+    steps:
+      - name: Trigger deploy
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "Chua set RENDER_DEPLOY_HOOK_URL — bo qua deploy."
+            exit 0
+          fi
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+      - name: Smoke test
+        run: |
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "Chua set PUBLIC_URL — bo qua smoke test."
+            exit 0
+          fi
+          sleep 45
+          curl -fsS "$PUBLIC_URL/health"
