@@ -63,7 +63,17 @@ async def lifespan(_app: FastAPI):
     log_event("service_stopped", service=SERVICE_NAME)
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Day 12 Production Agent", version=SERVICE_VERSION, lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class AskRequest(BaseModel):
