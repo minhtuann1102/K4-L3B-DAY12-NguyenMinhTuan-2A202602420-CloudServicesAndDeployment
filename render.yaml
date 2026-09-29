@@ -6,8 +6,9 @@
 services:
   - type: web
     name: day12-agent
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    runtime: image
+    image:
+      url: ghcr.io/minhtuann1102/k4-l3b-day12-nguyenminhtuan-2a202602420-cloudservicesanddeployment:latest
     plan: free
     healthCheckPath: /health
     envVars:
