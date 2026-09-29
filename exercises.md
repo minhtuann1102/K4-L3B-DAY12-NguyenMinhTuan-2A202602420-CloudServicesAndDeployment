@@ -16,14 +16,9 @@ Trong `Settings`, `agent_api_key` không có giá trị mặc định nên app c
 khi khởi động nếu thiếu biến môi trường. Hãy mô tả một tình huống cụ thể mà
 việc "chết sớm" này cứu bạn, so với việc để mặc định `"changeme"`.
 
-> Khi deploy lên Render, tôi quên set biến `AGENT_API_KEY` trong dashboard.
-> Với code hiện tại, service build xong nhưng crash ngay lúc startup với
-> `ValidationError: agent_api_key Field required` — log đỏ hiện ngay trên
-> dashboard, tôi sửa trong 1 phút. Nếu để mặc định `"changeme"`, service sẽ
-> khởi động bình thường, health check xanh, tôi tưởng deploy thành công rồi
-> chuyển việc khác; trong lúc đó bot quét Internet gọi `/ask` với key
-> `"changeme"` (đoán được vì giá trị nằm trong repo) và tiêu tiền LLM của
-> tôi — mãi tới khi xem hóa đơn mới phát hiện.
+> Lúc deploy lên Render em quên điền biến `AGENT_API_KEY`. Nhờ không có giá trị mặc định nên app crash ngay lúc vừa bật, log dashboard báo đỏ cho biết thiếu key và em sửa được luôn.
+>
+> Nếu để mặc định là `"changeme"`, app vẫn chạy bình thường, health check vẫn báo xanh tưởng đã deploy ngon lành. Nhưng bot quét mạng sẽ dò ra key `"changeme"` lộ trong repo rồi spam API làm cháy tài khoản OpenAI/LLM lúc nào không hay.
 
 ---
 
@@ -33,19 +28,14 @@ Chạy service và gọi `/ask` vài lần. Dán một dòng log JSON bạn thu 
 nêu **hai** việc bạn làm được với dòng log đó mà `print("đã trả lời xong")`
 không làm được.
 
-> Dòng log thật từ `docker compose logs agent`:
+> Dòng log thật lấy từ container:
 >
 > ```json
 > {"event": "ask_completed", "level": "info", "timestamp": "2026-09-29T03:16:23.991579+00:00", "user_id": "sv-e2e", "tokens_in": 3, "tokens_out": 37, "cost_usd": 2.265e-05}
 > ```
 >
-> Hai việc làm được mà `print("đã trả lời xong")` không làm được:
-> 1. **Truy vấn theo trường:** gộp `cost_usd` theo `user_id` để tìm "user nào
->    tiêu nhiều tiền nhất hôm nay" — chuỗi print không parse được, JSON thì
->    `jq` lọc là ra ngay.
-> 2. **Lọc theo mức độ để cảnh báo:** trường `level` cho phép set alert
->    "tỷ lệ `level=error` trong 5 phút vượt 5% thì báo Slack" — print không
->    phân biệt info với error, log gộp chung một loại, không lọc nổi.
+> 1. Dùng `jq` hoặc đẩy vào Grafana/ELK để lọc và cộng tổng `cost_usd` theo từng `user_id` xem ai tiêu tốn tiền nhất.
+> 2. Bắt trường `level == "error"` để bot tự động bắn cảnh báo qua Slack/Telegram khi có sự cố. Lệnh `print()` chỉ ra text trơn, máy không bóc tách hay lọc tự động được.
 
 ---
 
@@ -66,13 +56,9 @@ docker images | grep agent
 
 Giải thích: phần dung lượng chênh lệch đó là những gì?
 
-> Chênh lệch ~1460MB là **build toolchain và base image đầy đủ** mà bản
-> 1-stage mang theo vô ích: `python:3.11` bản full (image alone đã 1.61GB,
-> chứa compiler, headers, documentation) thay vì `python:3.11-slim` (~150MB),
-> cộng cache pip và toàn bộ dependency nằm cùng layer với source. Bản
-> multi-stage chỉ copy thư mục `/install` từ builder sang runtime nên compiler
-> và lớp đệm bị vứt lại ở stage bị discard — thứ runtime cần chỉ là thư viện
-> thuần Python. Kết quả: 1730MB → 271MB (gấp 6.4 lần).
+> Chênh lệch hơn 1.4GB là do bản 1-stage dùng base `python:3.11` đầy đủ, ôm theo cả compiler C/C++, headers, thư viện build hệ thống và cache pip.
+>
+> Bản multi-stage chỉ cài thư viện ở stage builder, sang runtime dùng `python:3.11-slim` chỉ copy đúng thư mục `/install` sang. Toàn bộ compiler và rác build đều bị vứt lại ở stage đầu nên image nhẹ hơn hẳn 6 lần.
 
 ---
 
@@ -82,14 +68,9 @@ Sửa một ký tự trong `app/main.py` rồi build lại. Với Dockerfile c�
 layer nào được dùng lại từ cache, layer nào phải chạy lại? Nếu bạn đặt
 `COPY . .` lên trước `RUN pip install` thì kết quả khác thế nào?
 
-> Dockerfile của tôi theo thứ tự: `FROM` → `COPY requirements.txt` →
-> `RUN pip install` → `COPY --from` → `COPY app` → `COPY utils`. Khi sửa 1
-> ký tự trong `main.py`: mọi layer từ `FROM` đến `pip install` vẫn **dùng lại
-> từ cache** (hash của `requirements.txt` không đổi), chỉ `COPY app ./app`
-> trở đi phải chạy lại — build mất ~1 giây. Nếu đặt `COPY . .` trước
-> `RUN pip install`, thì sửa `main.py` làm invalid layer `COPY . .` →
-> `pip install` chạy lại toàn bộ → mỗi lần sửa code là tốn vài phút cài lại
-> thư viện, và cache gần như vô nghĩa.
+> Khi sửa 1 ký tự trong `main.py`: Dockerfile dùng lại cache toàn bộ từ `FROM` tới `RUN pip install` (vì `requirements.txt` không đổi), chỉ chạy lại từ `COPY app ./app` nên build mất chưa tới 2 giây.
+>
+> Nếu đặt `COPY . .` trước `RUN pip install`: Mỗi lần sửa code là layer `COPY . .` bị mất cache, kéo theo lệnh `pip install` phải tải và cài lại từ đầu, mỗi lần build mất thêm vài phút ngồi chờ rất ức chế.
 
 ---
 
@@ -99,15 +80,11 @@ Container mặc định chạy bằng root. Mô tả chuỗi sự kiện dẫn t
 trong code Python của bạn" tới "kẻ tấn công có quyền cao trên máy host", và
 lệnh `USER` cắt đứt chuỗi đó ở chỗ nào.
 
-> Chuỗi sự kiện: (1) attacker khai thác lỗ hổng trong app — ví dụ đọc file
-> tùy ý qua một endpoint; (2) container chạy root nên hắn **đọc được mọi file
-> trong container**, gồm source và env; (3) kết hợp một lỗ hổng escape tiếp
-> (Docker socket mount sai, kernel vuln...), hắn trở thành **root trên host** —
-> máy đó có thể đang chạy container của nhiều service khác; (4) từ root host
-> hắn lấy tiếp credential cloud qua metadata service. Lệnh `USER appuser`
-> (uid 10001) cắt ngay ở bước (2): quyền đọc bị giới hạn theo user thường,
-> và nếu thoát được container thì trên host hắn chỉ là user 10001 thường
-> đẳng — không còn cửa bước (3) biến thành root ngay lập tức.
+> 1. App dính lỗ hổng đọc file hoặc thực thi lệnh (RCE).
+> 2. Vì chạy root trong container, kẻ tấn công chiếm toàn quyền container, đọc trộm code và biến môi trường.
+> 3. Lợi dụng sơ hở cấu hình (như mount docker.sock) hoặc lỗi kernel, hắn escape ra ngoài host và nghiễm nhiên thành **root trên máy host**, chiếm luôn cả server.
+>
+> Lệnh `USER appuser` cắt đứt ngay từ bước 2: App chỉ chạy với quyền user thường, không can thiệp được file hệ thống và dù có thoát ra ngoài host cũng chỉ là user vô danh, không leo thang lên root được.
 
 ---
 
@@ -118,12 +95,11 @@ phút đồng hồ (reset lúc giây 00), một người dùng có thể gửi t
 request trong 2 giây liên tiếp khi hạn mức là 10/phút? Giải thích cách đạt được
 con số đó.
 
-> **20 request trong 2 giây.** Cách đạt: gửi 10 request vào giây 59 của phút
-> T (hạn mức phút T vừa dùng hết, vẫn hợp lệ), rồi ngay khi đồng hồ sang phút
-> T+1 giây 00 reset bộ đếm, gửi tiếp 10 request trong giây 01. Tổng 20 request
-> trong 2 giây mà vẫn "đúng luật" — đó là kẽ hở của đếm theo phút cố định.
-> Sliding window bịt kín kẽ hở này: 10 request ở giây 59 vẫn nằm trong cửa sổ
-> 60s tính tới giây 01 nên request thứ 11 sẽ bị chặn.
+> Gửi được tối đa **20 request trong 2 giây**.
+>
+> Cách làm: Bắn 10 request ở giây 59 của phút trước (vừa hết hạn mức), sang giây 00 phút sau bộ đếm reset về 0, bắn tiếp luôn 10 request nữa.
+>
+> Cơ chế sliding window giải quyết việc này vì nó luôn tính lùi 60s từ thời điểm hiện tại: 10 request ở giây 59 vẫn bị tính vào cửa sổ 60s nên request gửi ở giây 00-01 sẽ bị chặn ngay với mã 429.
 
 ---
 
@@ -132,17 +108,9 @@ con số đó.
 Hai cơ chế này khác nhau ở điểm nào? Cho một tình huống mà rate limit cho qua
 nhưng cost guard phải chặn, và một tình huống ngược lại.
 
-> Rate limit chặn theo **số lượng request/phút** (429), cost guard chặn theo
-> **số tiền đã tiêu trong tháng** (402) — một bên đếm nhịp độ, bên kia đếm
-> tiền.
->
-> - **Rate limit cho qua, cost guard chặn:** user gửi 5 request/phút (dưới
->   hạn mức 10) nhưng mỗi request prompt ~500k token; chạy đều nửa tháng thì
->   tổng chi phí vượt ngân sách 10 USD → request vẫn "hợp nhịp độ" nhưng cost
->   guard phải chặn bằng 402.
-> - **Cost guard cho qua, rate limit chặn:** đầu tháng user chưa tiêu đồng
->   nào (cost guard cho qua) nhưng bấm refresh điên cuồng 100 request trong 1
->   phút → rate limit chặn ở request thứ 11 bằng 429.
+> - Rate limit đếm **số request/phút** (chống nghẽn/spam, trả về 429). Cost guard đếm **tổng tiền USD đã tiêu trong tháng** (bảo vệ ngân sách, trả về 402).
+> - **Rate limit cho qua, Cost guard chặn:** User gửi 1 request/phút (rất chậm rãi) nhưng mỗi lần nhét prompt dài triệu token; sau vài ngày tiêu hết 10 USD -> Cost guard chặn 402 dù không hề spam.
+> - **Cost guard cho qua, Rate limit chặn:** Đầu tháng tài khoản còn nguyên 10 USD, user chạy tool bắn liền 20 request trong 3 giây -> Cost guard thấy còn tiền cho qua, nhưng Rate limit túm lại ngay ở request thứ 11 với mã 429.
 
 ---
 
@@ -151,16 +119,13 @@ nhưng cost guard phải chặn, và một tình huống ngược lại.
 Nếu gộp hai endpoint làm một và cho nó kiểm tra Redis, chuyện gì xảy ra với cụm
 3 container khi Redis mất kết nối 30 giây? Trả lời theo đúng thứ tự sự kiện.
 
-> 1. Redis mất kết nối 30 giây. 2. Endpoint gộp (đang là health check của
-> orchestrator) trả 503 cho cả 3 container vì `ping()` thất bại. 3.
-> Orchestrator thấy "unhealthy" → **restart cả 3 cùng lúc** (cùng một lý do
-> fail). 4. Container mới khởi động, Redis vẫn chết → 503 → restart tiếp →
-> **vòng lặp restart**. 5. Khi Redis quay lại, cả 3 đang giữa chu kỳ restart,
-> không container nào nhận traffic → sự cố 30 giây của Redis thành sự cố dài
-> hơn của toàn hệ thống. Tách `/health` (không kiểm tra gì → orchestrator chỉ
-> restart khi process thật sự chết) và `/ready` (kiểm tra Redis → LB ngừng
-> đẩy traffic nhưng KHÔNG restart) thì Redis chết 30s chỉ khiến traffic dừng
-> 30s, service tự hồi khi Redis quay lại.
+> 1. Redis mất kết nối 30s.
+> 2. Cả 3 container check Redis thất bại, `/health` đồng loạt trả 503.
+> 3. Orchestrator tưởng cả 3 container bị chết nên kill và restart toàn bộ cùng lúc.
+> 4. Container mới bật lên, Redis vẫn chưa online -> 503 -> lại bị restart -> dính crash loop.
+> 5. Lúc Redis sống lại thì các container vẫn đang khởi động dở dang, hệ thống sập lâu hơn thực tế.
+>
+> Tách riêng `/health` (check process sống) và `/ready` (check nối Redis) giúp orchestrator chỉ tạm ngừng đẩy traffic khi Redis chết chứ không restart app bậy bạ.
 
 ---
 
@@ -170,23 +135,18 @@ Chạy `docker compose up --scale agent=3` rồi gọi `/ask` nhiều lần vớ
 `X-User-Id`. Quan sát `history_length` trong response. Nếu lịch sử được lưu
 trong một dict Python thay vì Redis, bạn sẽ thấy con số đó thay đổi thế nào?
 
-> Tôi chạy 2 instance (cổng 8000 và 8001, chung Redis) và gọi xen kẽ cùng
-> `X-User-Id: sv-scale`, kết quả thật:
+> Em chạy 2 instance (cổng 8000 và 8001) nối chung Redis, kết quả thật:
 >
-> ```
-> lan 1 (instance :8000) -> history_length=0
-> lan 2 (instance :8001) -> history_length=2
-> lan 3 (instance :8000) -> history_length=4
-> lan 4 (instance :8001) -> history_length=6
-> lan 5 (instance :8000) -> history_length=8
-> lan 6 (instance :8001) -> history_length=10
+> ```text
+> :8000 -> history_length = 0
+> :8001 -> history_length = 2
+> :8000 -> history_length = 4
+> :8001 -> history_length = 6
 > ```
 >
-> `history_length` tăng đều vì mọi instance cùng đọc/ghi một Redis. Nếu lưu
-> trong dict Python từng process, con số sẽ **nhảy loạn và lặp lại**: request
-> vào instance A luôn thấy history riêng của A (0, 2, 4...), vào B thấy của B
-> (0, 2, 4...) — agent "mất trí nhớ" tùy request rớt vào container nào, và
-> reset về 0 mỗi lần container restart.
+> `history_length` tăng đều vì mọi instance cùng đọc/ghi một Redis.
+>
+> Nếu lưu trong `dict` Python của từng process: request vào container nào chỉ thấy lịch sử riêng của container đó, con số sẽ nhảy loạn (ví dụ 0 -> 2 rồi lại về 0 -> 2 khi đổi cổng), bot bị mất trí nhớ và container restart là mất sạch.
 
 ---
 
@@ -196,18 +156,6 @@ Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health 
 timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
 tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
 
-> **Lỗi:** service deploy xong nhưng crash ngay lúc startup. Log hiển thị:
-> `NotImplementedError: TODO (CP4): cài đặt install` trong `app/lifecycle.py`
-> rồi `Application startup failed. Exiting.`
->
-> **Tìm nguyên nhân:** đọc runtime log (dashboard → Logs) thay vì đoán —
-> traceback chỉ thẳng dòng `lifecycle.py`, line 59. Nguyên nhân gốc: hàm
-> `lifespan` của FastAPI gọi `lifecycle.install()` lúc khởi động, nhưng tôi
-> để đó là TODO nên nó ném exception trước khi server kịp bind cổng — container
-> start rồi chết ngay.
->
-> **Sửa:** cài `install()` và `request_shutdown()` (nhớ lại handler cũ bằng
-> `signal.getsignal` trước khi `signal.signal` ghi đè), rebuild và redeploy —
-> service khởi động正常. Bài học: mọi dependency trong startup hook phải xong
-> trước khi claim "deploy xong", và luôn đọc log thay vì chỉ nhìn trạng thái
-> build.
+> - **Lỗi:** Deploy Render bằng cách build từ source bị chết giữa chừng, log báo `Out of memory: Killed process` (exit code 137).
+> - **Nguyên nhân:** Đọc log trên dashboard thấy lệnh `pip install` ngốn quá nhiều RAM, vượt quá mức 512MB của gói Render Free nên bị hệ thống kill.
+> - **Cách sửa:** Dùng GitHub Actions CI build sẵn Docker image rồi đẩy lên GHCR. Trên Render chỉ cần chọn "Deploy an existing image from a registry" (`runtime: image`) kéo image về chạy. Không tốn 1MB RAM nào để build, deploy cực nhanh và không bao giờ bị OOM nữa.
