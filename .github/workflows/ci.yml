@@ -27,12 +27,28 @@ jobs:
         run: pytest tests/ -v -m "not docker" --ignore=tests/test_cp5.py --ignore=tests/test_bonus_cicd.py
 
   # 2. Build Docker image ở môi trường sạch — "máy tôi build được" có kiểm chứng
+  #    Sau khi test xanh và push vào main → push luôn image lên GHCR,
+  #    Render chỉ cần pull image sẵn (KHÔNG build lại trên cloud → hết lỗi thiếu RAM)
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t day12-agent:ci .
+      - name: Dang nhap GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push image len GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          # GHCR yêu cầu tên image viết thường toàn bộ
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          docker tag day12-agent:ci "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+          echo "Da push: $IMAGE:latest"
 
   # 3. Chỉ deploy khi test + build đều xanh và chỉ từ nhánh main
   deploy:
